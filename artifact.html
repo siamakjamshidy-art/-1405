@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>تسویه بازرگانی کتاب</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#fff; --ink:#1c2333; --muted:#6b7484;
+    --line:#e3e6ec; --accent:#1f6feb; --neg:#d1242f; --pos:#1a7f37;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font-family:"Vazirmatn","IRANSans",Tahoma,sans-serif;font-size:14px}
+  header{background:#fff;border-bottom:1px solid var(--line);padding:16px 24px;
+         display:flex;align-items:center;gap:16px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+  header h1{font-size:17px;margin:0;font-weight:700}
+  header .sub{color:var(--muted);font-size:12px}
+  .spacer{flex:1}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:16px 24px}
+  select,input[type=text],button{
+    font-family:inherit;font-size:13px;padding:8px 12px;border:1px solid var(--line);
+    border-radius:8px;background:#fff;color:var(--ink)}
+  input[type=text]{min-width:220px}
+  button{cursor:pointer;background:var(--accent);color:#fff;border-color:var(--accent)}
+  button.ghost{background:#fff;color:var(--ink);border-color:var(--line)}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .wrap{padding:0 24px 40px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .tablebox{overflow:auto;max-height:calc(100vh - 230px)}
+  table{border-collapse:collapse;width:100%;font-size:13px}
+  th,td{padding:8px 10px;border-bottom:1px solid var(--line);text-align:center;white-space:nowrap}
+  thead th{background:#f0f2f6;position:sticky;top:0;z-index:2;font-weight:600}
+  td.name{text-align:right;white-space:normal;min-width:220px}
+  tbody tr:nth-child(even){background:#fafbfc}
+  tbody tr:hover{background:#eef4ff}
+  tfoot td{background:#f0f2f6;font-weight:700;position:sticky;bottom:0}
+  .neg{color:var(--neg);font-weight:700}
+  .ok{color:var(--pos)}
+  .zero{color:#a0a6b2}
+  .msg{padding:24px;text-align:center;color:var(--muted)}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#eef4ff;color:var(--accent);font-size:12px}
+  .err{background:#fff0f0;border:1px solid #ffd0d0;color:#a11;padding:12px 16px;border-radius:8px;margin:12px 24px}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>تسویه بازرگانی کتاب</h1>
+    <div class="sub" id="meta">کانون زبان — داشبورد موجودی و اعلام نیاز</div>
+  </div>
+  <div class="spacer"></div>
+  <input type="file" id="file" accept=".xlsx,.xls" hidden>
+  <button class="ghost" onclick="document.getElementById('file').click()">بارگذاری فایل اکسل</button>
+</header>
+
+<div class="controls">
+  <label>مرکز:</label>
+  <select id="center"><option value="">— انتخاب کنید —</option></select>
+  <input type="text" id="q" placeholder="جستجوی نام کتاب یا بارکد…">
+  <div class="spacer"></div>
+  <span class="pill" id="count">۰ ردیف</span>
+  <button class="ghost" id="export" disabled>خروجی اکسل</button>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <div class="tablebox">
+      <table id="tbl">
+        <thead>
+          <tr>
+            <th>گروه</th><th>بارکد</th><th>نام کتاب</th><th>قیمت</th>
+            <th>موجودی قبلی</th><th>دریافتی</th><th>فروش</th><th>اهدا</th><th>مرجوعی</th>
+            <th>موجودی فعلی</th><th>زبان‌آموز</th><th>اعلام نیاز</th>
+            <th>مبلغ فروش</th><th>ارزش موجودی</th>
+          </tr>
+        </thead>
+        <tbody id="body">
+          <tr><td colspan="14" class="msg">برای شروع، فایل اکسل را بارگذاری کنید.</td></tr>
+        </tbody>
+        <tfoot id="foot" hidden></tfoot>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const FA = n => (n==null||isNaN(n)) ? "—" :
+  Number(n).toLocaleString('fa-IR', {maximumFractionDigits:0});
+const norm = s => String(s==null?"":s).replace(/ي/g,'ی').replace(/ك/g,'ک')
+                    .replace(/\u200c/g,' ').replace(/\s+/g,' ').trim();
+const normKey = s => norm(s).replace(/\s/g,'');
+
+let DATA = { rows:[], centers:[], settings:{} };
+
+/* ---------- helpers ---------- */
+function sheetByName(wb, re){
+  const name = wb.SheetNames.find(n => re.test(norm(n)));
+  return name ? wb.Sheets[name] : null;
+}
+function toGrid(ws){
+  return XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null, blankrows:true});
+}
+/* find header row: the row containing 'نام محصول' or 'بارکد' */
+function headerRow(grid, needles){
+  for (let r=0; r<Math.min(grid.length, 20); r++){
+    const cells = (grid[r]||[]).map(norm);
+    if (needles.every(n => cells.some(c => c.includes(n)))) return r;
+  }
+  return -1;
+}
+function colIndex(grid, r, needle){
+  const cells = (grid[r]||[]).map(norm);
+  return cells.findIndex(c => c.includes(needle));
+}
+
+/* ---------- read one stock-type sheet → Map(productKey → {center:qty}) ---------- */
+function readStockSheet(ws){
+  const grid = toGrid(ws);
+  const hr = headerRow(grid, ['نام محصول']);
+  if (hr < 0) return {map:new Map(), centers:[]};
+  const cName = colIndex(grid, hr, 'نام محصول');
+  const header = grid[hr].map(norm);
+  // centers = header cells from first center column to end, skipping empty
+  const centers = [];
+  const centerCols = [];
+  for (let c=cName+1; c<header.length; c++){
+    const h = header[c];
+    if (!h) continue;
+    if (h.includes('مبلغ') || h.includes('قیمت') || h.includes('موجودی انبار')) continue;
+    centers.push(h); centerCols.push(c);
+  }
+  const map = new Map();
+  for (let r=hr+1; r<grid.length; r++){
+    const nm = grid[r][cName];
+    if (!nm) continue;
+    const key = normKey(nm);
+    const rec = map.get(key) || {};
+    centerCols.forEach((c,i)=>{ rec[centers[i]] = Number(grid[r][c]) || 0; });
+    map.set(key, rec);
+  }
+  return {map, centers};
+}
+
+/* ---------- read dashboard ---------- */
+function readDashboard(ws){
+  const grid = toGrid(ws);
+  const hr = headerRow(grid, ['بارکد','نام']);
+  if (hr < 0) return {rows:[], center:null};
+  const c = {
+    group: colIndex(grid,hr,'گروه'),
+    barcode: colIndex(grid,hr,'بارکد'),
+    name: colIndex(grid,hr,'نام'),
+    price: colIndex(grid,hr,'قیمت'),
+    prev: colIndex(grid,hr,'موجودی قبلی'),
+    recv: colIndex(grid,hr,'ارسالی'),
+    sold: colIndex(grid,hr,'فروخته'),
+    give: colIndex(grid,hr,'واگذاری'),
+    ret: colIndex(grid,hr,'مرجوع'),
+    cur: colIndex(grid,hr,'موجودی فعلی'),
+    students: colIndex(grid,hr,'زبان آموز'),
+    demand: colIndex(grid,hr,'اعلام نیاز')
+  };
+  const rows = [];
+  for (let r=hr+1; r<grid.length; r++){
+    const nm = grid[r][c.name];
+    if (!nm) continue;
+    const g = i => (i>=0 ? grid[r][i] : null);
+    const price = Number(g(c.price)) || 0;
+    const prev = Number(g(c.prev)) || 0;
+    const recv = Number(g(c.recv)) || 0;
+    const sold = Number(g(c.sold)) || 0;
+    const give = Number(g(c.give)) || 0;
+    const ret  = Number(g(c.ret))  || 0;
+    const cur = prev + recv - sold - give - ret;
+    const students = Number(g(c.students)) || 0;
+    rows.push({
+      group: g(c.group) || '',
+      barcode: g(c.barcode) || '',
+      name: nm,
+      key: normKey(nm),
+      price, prev, recv, sold, give, ret, cur, students,
+      demand: Math.max(0, students - cur),
+      soldValue: sold * price,
+      stockValue: Math.max(0,cur) * price
+    });
+  }
+  const center = grid[0] && grid[0][8] ? norm(grid[0][8]) : null; // I1
+  return {rows, center};
+}
+
+/* ---------- build ---------- */
+function build(wb){
+  const dash = sheetByName(wb, /^بازرگانی$/);
+  const form = sheetByName(wb, /^فرمول$/);
+  if (!dash) throw new Error('شیت «بازرگانی» پیدا نشد.');
+
+  const d = readDashboard(dash);
+
+  /* centers: from فرمول columns G/H/I, fallback to stock-sheet headers */
+  let centers = [];
+  if (form){
+    const g = toGrid(form);
+    const set = new Set();
+    g.forEach(row => {
+      [6,7,8].forEach(i => { const v = norm(row[i]); if (v && v.length>2 && !/سطح|مرکز|شعبه/.test(v)) set.add(v); });
+    });
+    centers = [...set];
+  }
+  if (!centers.length){
+    const st = sheetByName(wb, /موجودی/);
+    if (st) centers = readStockSheet(st).centers;
+  }
+
+  DATA.rows = d.rows;
+  DATA.centers = centers.sort((a,b)=>a.localeCompare(b,'fa'));
+  DATA.settings = { center: d.center };
+}
+
+/* ---------- render ---------- */
+function render(){
+  const center = document.getElementById('center').value;
+  const q = norm(document.getElementById('q').value);
+  const body = document.getElementById('body');
+  const foot = document.getElementById('foot');
+
+  if (!DATA.rows.length){
+    body.innerHTML = '<tr><td colspan="14" class="msg">برای شروع، فایل اکسل را بارگذاری کنید.</td></tr>';
+    foot.hidden = true; return;
+  }
+  if (!center){
+    body.innerHTML = '<tr><td colspan="14" class="msg">یک مرکز انتخاب کنید.</td></tr>';
+    foot.hidden = true;
+    document.getElementById('count').textContent = FA(DATA.rows.length)+' ردیف';
+    return;
+  }
+
+  const rows = DATA.rows.filter(r =>
+    !q || norm(r.name).includes(q) || norm(String(r.barcode)).includes(q));
+
+  let t = {sold:0, stock:0, demand:0};
+  let html = '';
+  rows.forEach(r => {
+    t.sold += r.soldValue; t.stock += r.stockValue; t.demand += r.demand;
+    const curCls = r.cur < 0 ? 'neg' : (r.cur === 0 ? 'zero' : 'ok');
+    html += `<tr>
+      <td>${r.group||'—'}</td>
+      <td>${r.barcode||'—'}</td>
+      <td class="name">${r.name}</td>
+      <td>${FA(r.price)}</td>
+      <td>${FA(r.prev)}</td>
+      <td>${FA(r.recv)}</td>
+      <td>${FA(r.sold)}</td>
+      <td>${FA(r.give)}</td>
+      <td>${FA(r.ret)}</td>
+      <td class="${curCls}">${FA(r.cur)}</td>
+      <td>${FA(r.students)}</td>
+      <td class="${r.demand>0?'neg':'zero'}">${FA(r.demand)}</td>
+      <td>${FA(r.soldValue)}</td>
+      <td>${FA(r.stockValue)}</td>
+    </tr>`;
+  });
+  body.innerHTML = html || '<tr><td colspan="14" class="msg">ردیفی مطابق جستجو پیدا نشد.</td></tr>';
+
+  foot.hidden = false;
+  foot.innerHTML = `<tr>
+    <td colspan="12">جمع (${FA(rows.length)} ردیف)</td>
+    <td>${FA(t.sold)}</td><td>${FA(t.stock)}</td>
+  </tr>`;
+
+  document.getElementById('count').textContent = FA(rows.length)+' ردیف';
+}
+
+/* ---------- events ---------- */
+document.getElementById('file').addEventListener('change', async e => {
+  const f = e.target.files[0]; if (!f) return;
+  document.getElementById('meta').textContent = 'در حال خواندن…';
+  try{
+    const buf = await f.arrayBuffer();
+    const wb = XLSX.read(buf, {type:'array'});
+    build(wb);
+    const sel = document.getElementById('center');
+    sel.innerHTML = '<option value="">— انتخاب کنید —</option>' +
+      DATA.centers.map(c=>`<option>${c}</option>`).join('');
+    if (DATA.settings.center){
+      const opt = [...sel.options].find(o=>norm(o.value)===norm(DATA.settings.center));
+      if (opt) sel.value = opt.value;
+    }
+    document.getElementById('meta').textContent =
+      'فایل: '+f.name+' • '+FA(DATA.rows.length)+' کتاب • '+FA(DATA.centers.length)+' مرکز';
+    document.getElementById('export').disabled = false;
+    render();
+  }catch(err){
+    document.getElementById('meta').textContent = 'خطا در خواندن فایل';
+    document.body.insertAdjacentHTML('afterbegin',
+      `<div class="err">${err.message}</div>`);
+  }
+});
+
+document.getElementById('center').addEventListener('change', render);
+document.getElementById('q').addEventListener('input', render);
+
+document.getElementById('export').addEventListener('click', () => {
+  const center = document.getElementById('center').value;
+  const q = norm(document.getElementById('q').value);
+  const rows = DATA.rows.filter(r =>
+    !q || norm(r.name).includes(q) || norm(String(r.barcode)).includes(q));
+  const out = rows.map(r => ({
+    'گروه': r.group, 'بارکد': r.barcode, 'نام کتاب': r.name, 'قیمت': r.price,
+    'موجودی قبلی': r.prev, 'دریافتی': r.recv, 'فروش': r.sold, 'اهدا': r.give,
+    'مرجوعی': r.ret, 'موجودی فعلی': r.cur, 'زبان‌آموز': r.students,
+    'اعلام نیاز': r.demand, 'مبلغ فروش': r.soldValue, 'ارزش موجودی': r.stockValue
+  }));
+  const ws = XLSX.utils.json_to_sheet(out);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, center || 'گزارش');
+  XLSX.writeFile(wb, `تسویه-${center||'گزارش'}.xlsx`);
+});
+</script>
+</body>
+</html>
